@@ -504,6 +504,41 @@ LoadShardIntervalList(Oid relationId)
 
 
 /*
+ * GetOnlyShardOidOfReferenceTable returns OID of the one and only placement
+ * of the given reference table. Caller of this function must ensure that
+ * referenceTableOid is owned by a reference table.
+ */
+Oid
+GetOnlyShardOidOfReferenceTable(Oid referenceTableOid)
+{
+	const CitusTableCacheEntry *cacheEntry = GetCitusTableCacheEntry(referenceTableOid);
+
+	/* given OID should belong to a valid reference table */
+	Assert(cacheEntry != NULL && cacheEntry->shardIntervalArrayLength == 1);
+	Assert(cacheEntry->sortedShardIntervalArray != NULL &&
+		   cacheEntry->sortedShardIntervalArray[0] != NULL);
+
+	const ShardInterval *shardInterval = cacheEntry->sortedShardIntervalArray[0];
+	uint64 referenceTableShardId = shardInterval->shardId;
+
+	/* construct reference table's one & only placement's relation name */
+	const char *referenceTableName = get_rel_name(referenceTableOid);
+
+	Assert(referenceTableName != NULL);
+
+	char *referenceTableShardName = pstrdup(referenceTableName);
+	AppendShardIdToName(&referenceTableShardName, referenceTableShardId);
+
+	Oid referenceTableSchemaOid = get_rel_namespace(referenceTableOid);
+
+	Oid localReferenceTablePlacementOid = get_relname_relid(referenceTableShardName,
+															referenceTableSchemaOid);
+
+	return localReferenceTablePlacementOid;
+}
+
+
+/*
  * ShardIntervalCount returns number of shard intervals for a given distributed table.
  * The function returns 0 if table is not distributed, or no shards can be found for
  * the given relation id.
