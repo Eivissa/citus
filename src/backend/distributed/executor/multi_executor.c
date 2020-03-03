@@ -70,7 +70,7 @@ int ExecutorLevel = 0;
 /* local function forward declarations */
 static Relation StubRelation(TupleDesc tupleDescriptor);
 static bool AlterTableConstraintCheck(QueryDesc *queryDesc);
-static bool IsLocalReferenceTableJoinPlan(PlannedStmt *plan);
+static bool IsValidLocalReferenceTableJoinPlan(PlannedStmt *plan);
 static List * FindCitusCustomScanStates(PlanState *planState);
 static bool CitusCustomScanStateWalker(PlanState *planState,
 									   List **citusCustomScanStates);
@@ -149,7 +149,7 @@ CitusExecutorRun(QueryDesc *queryDesc,
 
 		if (CitusHasBeenLoaded())
 		{
-			if (IsLocalReferenceTableJoinPlan(queryDesc->plannedstmt) &&
+			if (IsValidLocalReferenceTableJoinPlan(queryDesc->plannedstmt) &&
 				IsMultiStatementTransaction())
 			{
 				/*
@@ -742,13 +742,13 @@ AlterTableConstraintCheck(QueryDesc *queryDesc)
 
 
 /*
- * IsLocalReferenceTableJoinPlan returns true if the given plan joins local tables
+ * IsValidLocalReferenceTableJoinPlan returns true if the given plan joins local tables
  * with reference table shards.
  *
  * This should be consistent with IsLocalReferenceTableJoin() in distributed_planner.c.
  */
 static bool
-IsLocalReferenceTableJoinPlan(PlannedStmt *plan)
+IsValidLocalReferenceTableJoinPlan(PlannedStmt *plan)
 {
 	bool hasReferenceTable = false;
 	bool hasLocalTable = false;
