@@ -409,6 +409,123 @@ ForeignConstraintFindDistKeys(HeapTuple pgConstraintTuple,
 
 
 /*
+ * ErrorIfUnsupportedAlterAddDropFKeyBetweenReferecenceAndLocalTable runs checks
+ * related to ALTER ADD / DROP foreign key constraints between local tables and
+ * reference tables. Note that constraint parameter is not effective DROP foreign
+ * key commands.
+ */
+void
+ErrorIfUnsupportedAlterAddDropFKeyBetweenReferecenceAndLocalTable(Oid referencingTableOid,
+																  Oid referencedTableOid,
+																  AlterTableType
+																  alterTableType,
+																  Constraint *constraint)
+{
+	Assert((alterTableType == AT_AddConstraint && constraint != NULL) ||
+		   (alterTableType == AT_DropConstraint && constraint == NULL));
+	Assert(OidIsValid(referencedTableOid) && OidIsValid(referencingTableOid));
+
+	bool referencingIsCitusTable = IsCitusTable(referencingTableOid);
+	char referencingDistMethod = 0;
+	bool referencingIsReferenceTable = false;
+
+	bool referencedIsCitusTable = IsCitusTable(referencedTableOid);
+	char referencedDistMethod = 0;
+	bool referencedIsReferenceTable = false;
+
+	if (referencingIsCitusTable)
+	{
+		referencingDistMethod = PartitionMethod(referencingTableOid);
+		referencingIsReferenceTable = (referencingDistMethod == DISTRIBUTE_BY_NONE);
+	}
+
+	if (referencedIsCitusTable)
+	{
+		referencedDistMethod = PartitionMethod(referencedTableOid);
+		referencedIsReferenceTable = (referencedDistMethod == DISTRIBUTE_BY_NONE);
+	}
+
+	bool fromReferenceTableToLocalTable = referencingIsReferenceTable &&
+										  !referencedIsCitusTable;
+	bool fromLocalTableToReferenceTable = !referencingIsCitusTable &&
+										  referencedIsReferenceTable;
+
+	if (!fromLocalTableToReferenceTable && !fromLocalTableToReferenceTable)
+	{
+		return;
+	}
+
+	/* reference table <> local table */
+
+	if (alterTableType == AT_AddConstraint)
+	{
+		/*
+		 * As defining a foreign key constraint between two tables requires
+		 * to execute a join query between those two tables (a reference
+		 * table and a local table at this point), we would already error
+		 * out in CitusExecutorRun function as Citus does not support joining
+		 * local tables and reference tables in transaction blocks yet.
+		 * However, both to early error out and to give a more appropriate
+		 * error message, we will throw the below error.
+		 */
+		if (IsMultiStatementTransaction())
+		{
+			ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							errmsg(
+								"cannot define foreign key constraint between a local table "
+								"and a reference table in a transaction block, udf block, or "
+								"distributed CTE subquery")));
+		}
+
+		/*
+		 * We only support RESTRICT or NO ACTION behaviour for "ALTER TABLE
+		 * reference_table ADD CONSTRAINT fkey FOREIGN KEY REFERENCES
+		 * local_table ON DELETE / UPDATE" commands
+		 */
+		bool onUpdateNoActionOrRestrict = (constraint->fk_upd_action ==
+										   FKCONSTR_ACTION_NOACTION ||
+										   constraint->fk_upd_action ==
+										   FKCONSTR_ACTION_RESTRICT);
+
+		bool onDeleteNoActionOrRestrict = (constraint->fk_del_action ==
+										   FKCONSTR_ACTION_NOACTION ||
+										   constraint->fk_del_action ==
+										   FKCONSTR_ACTION_RESTRICT);
+
+		if (fromReferenceTableToLocalTable && (!onUpdateNoActionOrRestrict ||
+											   !onDeleteNoActionOrRestrict))
+		{
+			ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							errmsg(
+								"cannot create foreign key constraint"),
+							errdetail(
+								"Foreign key constraints from reference tables to coordinator "
+								"local tables can only enforce RESTRICT or NO ACTION behaviour "
+								"ON DELETE / UPDATE")));
+		}
+
+		/*
+		 * Check if we are in the coordinator and coordinator can have reference
+		 * table placements
+		 */
+		if (!CanUseCoordinatorLocalTablesWithReferenceTables())
+		{
+			ereport(ERROR, (errcode(ERRCODE_INVALID_TABLE_DEFINITION),
+							errmsg(
+								"cannot ADD foreign key constraint"),
+							errdetail(
+								"Foreign keys between local tables and reference tables"
+								" are only allowed if reference table is replicated to "
+								"the coordinator"
+								),
+							errhint(
+								"Consider adding coordinator to pg_dist_node as well.")));
+		}
+	}
+}
+
+
+/*
  * ColumnAppearsInForeignKeyToReferenceTable checks if there is a foreign key
  * constraint from/to a reference table on the given column. We iterate
  * pg_constraint to fetch the constraint on the given relationId and find
