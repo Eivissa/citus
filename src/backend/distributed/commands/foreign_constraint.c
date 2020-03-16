@@ -100,7 +100,7 @@ ConstraintIsAForeignKeyToReferenceTable(char *constraintName, Oid relationId)
  * constraints and errors out if it is not possible to create one of the
  * foreign constraint in distributed environment.
  *
- * To support foreign constraints, we require that;
+ * To support foreign constraints in this function, we require that;
  * - If referencing and referenced tables are hash-distributed
  *		- Referencing and referenced tables are co-located.
  *      - Foreign constraint is defined over distribution column.
@@ -114,6 +114,17 @@ ConstraintIsAForeignKeyToReferenceTable(char *constraintName, Oid relationId)
  *        of the referencing column.
  * - If referencing table is a reference table, error out if the referenced
  *   table is not a reference table.
+ * 
+ * Note that checks performed in this functions are only done via
+ * PostprocessAlterTableStmt function. There is another case ,allowed by Citus,
+ * but being errored out in this function, creating foreign key constraint
+ * between a reference table and a coordinator local table. The rationale behind
+ * it is to allow defining foreign keys between coordinator local tables and
+ * reference tables only via ALTER TABLE ADD CONSTRAINT ... commands. This
+ * function, prevents upgrading "a local table involved in a foreign key
+ * constraint with another local table" to a reference table. See also
+ * ErrorIfUnsupportedAlterAddDropFKeyBetweenReferecenceAndLocalTable and its
+ * usage.
  */
 void
 ErrorIfUnsupportedForeignConstraintExists(Relation relation, char referencingDistMethod,
@@ -171,6 +182,7 @@ ErrorIfUnsupportedForeignConstraintExists(Relation relation, char referencingDis
 
 		bool selfReferencingTable = (referencingTableId == referencedTableId);
 
+		/* TODO: will remove this block after implementing create table ref_table references local_table */
 		if (!referencedIsCitusTable && !selfReferencingTable)
 		{
 			ereport(ERROR, (errcode(ERRCODE_INVALID_TABLE_DEFINITION),
@@ -220,7 +232,7 @@ ErrorIfUnsupportedForeignConstraintExists(Relation relation, char referencingDis
 								   "since foreign keys from reference tables "
 								   "to distributed tables are not supported"),
 							errdetail("A reference table can only have reference "
-									  "keys to other reference tables")));
+									  "keys to other reference tables or a local table")));
 		}
 
 		/*
