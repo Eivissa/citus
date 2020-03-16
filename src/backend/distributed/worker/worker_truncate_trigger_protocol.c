@@ -28,9 +28,9 @@ PG_FUNCTION_INFO_V1(worker_create_truncate_trigger);
 
 /*
  * worker_create_truncate_trigger creates a truncate trigger for the given distributed
- * table on current metadata worker. The function is intented to be called by the
+ * table on current metadata worker. The function is intended to be called by the
  * coordinator node during metadata propagation of mx tables or during the upgrades from
- * citus version <=5.2 to >=6.1. The function requires superuser permissions.
+ * Citus version <=5.2 to >=6.1. The function requires superuser permissions.
  */
 Datum
 worker_create_truncate_trigger(PG_FUNCTION_ARGS)

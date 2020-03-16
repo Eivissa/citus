@@ -123,11 +123,11 @@ ErrorIfUnsupportedForeignConstraintExists(Relation relation, char referencingDis
 	ScanKeyData scanKey[1];
 	int scanKeyCount = 1;
 
-	Oid referencingTableId = relation->rd_id;
-	bool referencingNotReplicated = true;
-	bool referencingIsCitus = IsCitusTable(referencingTableId);
+	Oid relationOid = relation->rd_id;
+	bool relationNotReplicated = true;
+	bool relationIsCitusTable = IsCitusTable(relationOid);
 
-	if (referencingIsCitus)
+	if (relationIsCitusTable)
 	{
 		/* ALTER TABLE command is applied over single replicated table */
 		referencingNotReplicated = SingleReplicatedTable(referencingTableId);
@@ -147,6 +147,7 @@ ErrorIfUnsupportedForeignConstraintExists(Relation relation, char referencingDis
 													scanKeyCount, scanKey);
 
 	HeapTuple heapTuple = systable_getnext(scanDescriptor);
+
 	while (HeapTupleIsValid(heapTuple))
 	{
 		Form_pg_constraint constraintForm = (Form_pg_constraint) GETSTRUCT(heapTuple);
@@ -166,11 +167,11 @@ ErrorIfUnsupportedForeignConstraintExists(Relation relation, char referencingDis
 		}
 
 		Oid referencedTableId = constraintForm->confrelid;
-		bool referencedIsCitus = IsCitusTable(referencedTableId);
+		bool referencedIsCitusTable = IsCitusTable(referencedTableId);
 
 		bool selfReferencingTable = (referencingTableId == referencedTableId);
 
-		if (!referencedIsCitus && !selfReferencingTable)
+		if (!referencedIsCitusTable && !selfReferencingTable)
 		{
 			ereport(ERROR, (errcode(ERRCODE_INVALID_TABLE_DEFINITION),
 							errmsg("cannot create foreign key constraint"),

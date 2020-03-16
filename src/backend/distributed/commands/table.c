@@ -75,8 +75,8 @@ PreprocessDropTableStmt(Node *node, const char *queryString)
 	foreach_ptr(tableNameList, dropTableStatement->objects)
 	{
 		RangeVar *tableRangeVar = makeRangeVarFromNameList(tableNameList);
-		bool missingOK = true;
 
+		const bool missingOK = true;
 		Oid relationId = RangeVarGetRelid(tableRangeVar, AccessShareLock, missingOK);
 
 		/* we're not interested in non-valid, non-distributed relations */
@@ -86,7 +86,7 @@ PreprocessDropTableStmt(Node *node, const char *queryString)
 		}
 
 		/* invalidate foreign key cache if the table involved in any foreign key */
-		if ((TableReferenced(relationId) || TableReferencing(relationId)))
+		if (TableReferenced(relationId) || TableReferencing(relationId))
 		{
 			MarkInvalidateForeignKeyGraph();
 		}
@@ -97,6 +97,7 @@ PreprocessDropTableStmt(Node *node, const char *queryString)
 			continue;
 		}
 
+		/* drop commands are only allowed from coordinator */
 		EnsureCoordinator();
 
 		List *partitionList = PartitionList(relationId);
@@ -110,7 +111,7 @@ PreprocessDropTableStmt(Node *node, const char *queryString)
 		Oid partitionRelationId = InvalidOid;
 		foreach_oid(partitionRelationId, partitionList)
 		{
-			char *detachPartitionCommand =
+			const char *detachPartitionCommand =
 				GenerateDetachPartitionCommand(partitionRelationId);
 
 			SendCommandToWorkersWithMetadata(detachPartitionCommand);
