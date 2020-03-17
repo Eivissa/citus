@@ -206,6 +206,7 @@ extern Node * ProcessCreateSubscriptionStmt(CreateSubscriptionStmt *createSubStm
 
 /* table.c - forward declarations */
 extern List * PreprocessDropTableStmt(Node *stmt, const char *queryString);
+extern List * MakeNameListFromRangeVar(const RangeVar *rel);
 extern List * PostprocessCreateTableStmtPartitionOf(CreateStmt *createStatement,
 													const char *queryString);
 extern List * PostprocessAlterTableStmtAttachPartition(

@@ -123,6 +123,35 @@ PreprocessDropTableStmt(Node *node, const char *queryString)
 
 
 /*
+ * MakeNameListFromRangeVar makes a namelist from a RangeVar. Its behaviour
+ * should be the exact opposite of postgres' makeRangeVarFromNameList.
+ */
+List *
+MakeNameListFromRangeVar(const RangeVar *rel)
+{
+	if (rel->catalogname != NULL)
+	{
+		Assert(rel->schemaname != NULL);
+		Assert(rel->relname != NULL);
+		return list_make3(makeString(rel->catalogname),
+						  makeString(rel->schemaname),
+						  makeString(rel->relname));
+	}
+	else if (rel->schemaname != NULL)
+	{
+		Assert(rel->relname != NULL);
+		return list_make2(makeString(rel->schemaname),
+						  makeString(rel->relname));
+	}
+	else
+	{
+		Assert(rel->relname != NULL);
+		return list_make1(makeString(rel->relname));
+	}
+}
+
+
+/*
  * PostprocessCreateTableStmtPartitionOf takes CreateStmt object as a parameter
  * but it only processes CREATE TABLE ... PARTITION OF statements and it checks
  * if user creates the table as a partition of a distributed table. In that case,
