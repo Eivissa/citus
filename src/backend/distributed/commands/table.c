@@ -42,7 +42,14 @@
 #include "utils/lsyscache.h"
 #include "utils/syscache.h"
 
-/* Local functions forward declarations for unsupported command checks */
+/*
+ * Local functions forward declarations for unsupported command checks and
+ * processing DROP TABLE commands
+ */
+static void DetachPartitionsFromMXNodes(List *citusTableOids);
+static void ExtractLocalTableAndReferenceTableOidsFromDropStmt(
+	DropStmt *dropTableStatement, List **localTableOids, List **referenceTableOids,
+	List **otherCitusTableOids);
 static Oid GetReferencedTableOidByFKeyConstraintName(Oid referencingRelationOid,
 													 const char *constraintName);
 static void PreprocessAlterTableAddDropFKey(AlterTableStmt *alterTableStatement);
@@ -76,20 +83,47 @@ PreprocessDropTableStmt(Node *node, const char *queryString)
 
 	Assert(dropTableStatement->removeType == OBJECT_TABLE);
 
-	List *tableNameList = NULL;
-	foreach_ptr(tableNameList, dropTableStatement->objects)
+	List *localTableOids = NIL;
+	List *referenceTableOids = NIL;
+	List *otherCitusTableOids = NIL;
+
+	ExtractLocalTableAndReferenceTableOidsFromDropStmt(dropTableStatement,
+													   &localTableOids,
+													   &referenceTableOids,
+													   &otherCitusTableOids);
+
+	List *citusTableOids = list_copy(referenceTableOids);
+	citusTableOids = list_concat(citusTableOids, otherCitusTableOids);
+
+	if (list_length(citusTableOids) <= 0)
 	{
-		RangeVar *tableRangeVar = makeRangeVarFromNameList(tableNameList);
+		/* no citus tables are to be dropped by DROP command, simply return */
+		return NIL;
+	}
 
-		const bool missingOK = true;
-		Oid relationId = RangeVarGetRelid(tableRangeVar, AccessShareLock, missingOK);
+	/* drop commands are only allowed from coordinator */
+	EnsureCoordinator();
 
-		/* we're not interested in non-valid, non-distributed relations */
-		if (relationId == InvalidOid || !IsCitusTable(relationId))
-		{
-			continue;
-		}
+	/* detach partitions of tables in MX nodes */
+	DetachPartitionsFromMXNodes(citusTableOids);
 
+	return NIL;
+}
+
+
+/*
+ * DetachPartitionsFromMXNodes sends commands to MX nodes for each partitioned
+ * table within the given OID list to DETACH partitions of those tables from
+ * their parents on MX nodes.
+ */
+static void
+DetachPartitionsFromMXNodes(List *citusTableOids)
+{
+	Assert(IsCoordinator());
+
+	Oid relationId = InvalidOid;
+	foreach_oid(relationId, citusTableOids)
+	{
 		/* invalidate foreign key cache if the table involved in any foreign key */
 		if (TableReferenced(relationId) || TableReferencing(relationId))
 		{
@@ -101,9 +135,6 @@ PreprocessDropTableStmt(Node *node, const char *queryString)
 		{
 			continue;
 		}
-
-		/* drop commands are only allowed from coordinator */
-		EnsureCoordinator();
 
 		List *partitionList = PartitionList(relationId);
 		if (list_length(partitionList) == 0)
@@ -122,8 +153,6 @@ PreprocessDropTableStmt(Node *node, const char *queryString)
 			SendCommandToWorkersWithMetadata(detachPartitionCommand);
 		}
 	}
-
-	return NIL;
 }
 
 
@@ -152,6 +181,84 @@ MakeNameListFromRangeVar(const RangeVar *rel)
 	{
 		Assert(rel->relname != NULL);
 		return list_make1(makeString(rel->relname));
+	}
+}
+
+
+/*
+ * ExtractLocalTableAndReferenceTableOidsFromDropStmt extracts OID lists for
+ * local tables, reference tables and other kind of citus tables, and fills
+ * the lists passed by non-null pointers accordingly.
+ */
+static void
+ExtractLocalTableAndReferenceTableOidsFromDropStmt(DropStmt *dropTableStatement,
+												   List **localTableOids,
+												   List **referenceTableOids,
+												   List **otherCitusTableOids)
+{
+	/* this function is only used for DROP TABLE commands at that time */
+	Assert(IsA(dropTableStatement, DropStmt) && dropTableStatement->removeType ==
+		   OBJECT_TABLE);
+
+	/* either of them should be non-null */
+	Assert(localTableOids != NULL || referenceTableOids != NULL || otherCitusTableOids !=
+		   NULL);
+
+	if (localTableOids)
+	{
+		*localTableOids = NIL;
+	}
+
+	if (referenceTableOids)
+	{
+		*referenceTableOids = NIL;
+	}
+
+	if (otherCitusTableOids)
+	{
+		*otherCitusTableOids = NIL;
+	}
+
+	List *tableNameList = NULL;
+	foreach_ptr(tableNameList, dropTableStatement->objects)
+	{
+		RangeVar *tableRangeVar = makeRangeVarFromNameList(tableNameList);
+
+		const bool missingOK = true;
+		Oid relationId = RangeVarGetRelid(tableRangeVar, AccessShareLock, missingOK);
+
+		if (!OidIsValid(relationId))
+		{
+			continue;
+		}
+
+		if (!IsCitusTable(relationId))
+		{
+			/* local table */
+			if (localTableOids)
+			{
+				*localTableOids = list_concat(*localTableOids, list_make1_oid(
+												  relationId));
+			}
+		}
+		else if (PartitionMethod(relationId) == DISTRIBUTE_BY_NONE)
+		{
+			/* reference table */
+			if (referenceTableOids)
+			{
+				*referenceTableOids = list_concat(*referenceTableOids, list_make1_oid(
+													  relationId));
+			}
+		}
+		else
+		{
+			/* a citus table but not a reference table */
+			if (otherCitusTableOids)
+			{
+				*otherCitusTableOids = list_concat(*otherCitusTableOids, list_make1_oid(
+													   relationId));
+			}
+		}
 	}
 }
 
