@@ -339,6 +339,20 @@ COPY reference_table FROM STDIN;
 \.
 ROLLBACK;
 
+CREATE TABLE ref_table(a int);
+INSERT INTO ref_table VALUES(1);
+
+BEGIN;
+-- trigger local execution
+SELECT COUNT(*) FROM reference_table;
+-- shard creation should be done locally
+SELECT create_reference_table('ref_table');
+INSERT INTO ref_table VALUES(2);
+
+-- verify that it worked.
+SELECT COUNT(*) FROM ref_table;
+ROLLBACK;
+
 SET citus.enable_local_execution = 'on';
 
 SET client_min_messages TO ERROR;
