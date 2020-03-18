@@ -35,6 +35,7 @@
 #include "distributed/version_compat.h"
 #include "distributed/worker_shard_visibility.h"
 #include "lib/stringinfo.h"
+#include "nodes/makefuncs.h"
 #include "nodes/parsenodes.h"
 #include "storage/lmgr.h"
 #include "utils/builtins.h"
@@ -47,6 +48,8 @@
  * processing DROP TABLE commands
  */
 static void DetachPartitionsFromMXNodes(List *citusTableOids);
+static List * GetLocalReferenceTablePlacementNameListsIfReferencedByALocalTable(
+	List *referenceTableOids);
 static void ExtractLocalTableAndReferenceTableOidsFromDropStmt(
 	DropStmt *dropTableStatement, List **localTableOids, List **referenceTableOids,
 	List **otherCitusTableOids);
@@ -107,6 +110,35 @@ PreprocessDropTableStmt(Node *node, const char *queryString)
 	/* detach partitions of tables in MX nodes */
 	DetachPartitionsFromMXNodes(citusTableOids);
 
+	if (dropTableStatement->behavior == DROP_CASCADE)
+	{
+		return NIL;
+	}
+
+	/*
+	 * At this point, it is not a cascading drop command. So we should perform
+	 * some checks and modifications on it related with reference tables having
+	 * involved in foreign key relations with local tables.
+	 */
+
+	/*
+	 * > a local reference table placement referencing to a local table
+	 *
+	 * If one of the range table entries is indicating reference table whose
+	 * local placement is referencing to a local table, PostgreSQL wouldn't be
+	 * aware of that we are dropping the dependent table too and hence would
+	 * error out. To solve this problem, we basically append the local placements
+	 * of those reference tables to the range table entries if they are referenced
+	 * by a local table.
+	 */
+	List *localReferenceTablePlacementNameLists =
+		GetLocalReferenceTablePlacementNameListsIfReferencedByALocalTable(
+			referenceTableOids);
+
+	/* extend list of objects to be dropped with the local placements of reference tables */
+	dropTableStatement->objects = list_concat(dropTableStatement->objects,
+											  localReferenceTablePlacementNameLists);
+
 	return NIL;
 }
 
@@ -153,6 +185,73 @@ DetachPartitionsFromMXNodes(List *citusTableOids)
 			SendCommandToWorkersWithMetadata(detachPartitionCommand);
 		}
 	}
+}
+
+
+/*
+ * GetLocalReferenceTablePlacementNameListsIfReferencedByALocalTable returns
+ * name lists of the local placements of reference tables that are referencing
+ * to a local table.
+ */
+static List *
+GetLocalReferenceTablePlacementNameListsIfReferencedByALocalTable(
+	List *referenceTableOids)
+{
+	/*
+	 * This function is only called from functions processing commands like
+	 * "DROP TABLE reference_table", hence we should be in the coordinator
+	 */
+	Assert(IsCoordinator());
+
+	if (list_length(referenceTableOids) <= 0)
+	{
+		/* no reference table exists in DROP TABLE command */
+		return NIL;
+	}
+
+	List *localReferenceTablePlacementNameLists = NIL;
+
+	Oid referenceTableOid = InvalidOid;
+	foreach_oid(referenceTableOid, referenceTableOids)
+	{
+		Oid localReferenceTablePlacementOid = GetOnlyShardOidOfReferenceTable(
+			referenceTableOid);
+
+		/*
+		 * The only time that we set foreign key directly from the placement
+		 * is when the reference table is referencing to aa regular PostgreSQL
+		 * table (local table). Hence, using below function makes sense
+		 */
+		bool localReferenceTablePlacementReferencingToALocalTable = TableReferencing(
+			localReferenceTablePlacementOid);
+
+		if (!localReferenceTablePlacementReferencingToALocalTable)
+		{
+			continue;
+		}
+
+		/*
+		 * At this point, there is at least one local table referencing to the
+		 * local placement of the reference table and DROP TABLE command is not
+		 * cascading. Add the 'name list'(s) for each reference table's local
+		 * placement then to add them into "dropStmt->objects" list
+		 */
+
+		Oid localReferenceTablePlacementSchemaOid = get_rel_namespace(
+			localReferenceTablePlacementOid);
+
+		char *schemaName = get_namespace_name(localReferenceTablePlacementSchemaOid);
+		char *relationName = get_rel_name(localReferenceTablePlacementOid);
+		int location = -1;
+
+		RangeVar *rangeVar = makeRangeVar(schemaName, relationName, location);
+		List *nameList = MakeNameListFromRangeVar(rangeVar);
+
+		localReferenceTablePlacementNameLists = list_concat(
+			localReferenceTablePlacementNameLists, list_make1(nameList));
+	}
+
+	return localReferenceTablePlacementNameLists;
 }
 
 
@@ -900,7 +999,7 @@ PreprocessAlterTableAddDropFKey(AlterTableStmt *alterTableStatement)
  * If there does not exist such a foreign key constraint, returns InvalidOid
  */
 static Oid
-GetReferencedTableOidByFKeyConstraintName(Oid referencingRelationOid, 
+GetReferencedTableOidByFKeyConstraintName(Oid referencingRelationOid,
 										  const char *constraintName)
 {
 	Oid referencedTableOid = InvalidOid;
