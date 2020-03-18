@@ -122,6 +122,19 @@ PreprocessDropTableStmt(Node *node, const char *queryString)
 	 */
 
 	/*
+	 * > a local table referencing to a local reference table placement
+	 *
+	 * If one of the range table entries is indicating a local table referencing
+	 * to a local placement of a reference table, PostgreSQL would always be
+	 * cascading to the dependent foreign key constraint as we execute placement
+	 * specific drop commands always with CASCADE. If there is such a reference
+	 * table in drop command and the dependent local table is not to be dropped
+	 * in that command we should error out here.
+	 */
+	ErrorIfMissingDependentLocalTablesToReferenceTables(localTableOids,
+														referenceTableOids);
+
+	/*
 	 * > a local reference table placement referencing to a local table
 	 *
 	 * If one of the range table entries is indicating reference table whose

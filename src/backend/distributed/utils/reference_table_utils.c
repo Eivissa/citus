@@ -408,6 +408,20 @@ DeleteAllReferenceTablePlacementsFromNodeGroup(int32 groupId)
 		return;
 	}
 
+	if (groupId == COORDINATOR_GROUP_ID)
+	{
+		/*
+		 * Check if a coordinator local table is referencing to a local reference
+		 * table placement.
+		 * If at least one local table is referencing to a local placement of
+		 * a reference table, PostgreSQL would always be cascading to the dependent
+		 * foreign key constraint as we execute placement specific drop commands
+		 * always with CASCADE. If there is such a reference table we should error
+		 * out here.
+		 */
+		ErrorIfMissingDependentLocalTablesToReferenceTables(NIL, referenceTableOids);
+	}
+
 	/*
 	 * We sort the reference table list to prevent deadlocks in concurrent
 	 * DeleteAllReferenceTablePlacementsFromNodeGroup calls.

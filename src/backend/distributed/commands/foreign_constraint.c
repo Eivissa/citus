@@ -21,6 +21,7 @@
 #include "catalog/pg_type.h"
 #include "distributed/colocation_utils.h"
 #include "distributed/commands.h"
+#include "distributed/listutils.h"
 #include "distributed/master_protocol.h"
 #include "distributed/multi_join_order.h"
 #include "distributed/version_compat.h"
@@ -40,6 +41,9 @@ static void ForeignConstraintFindDistKeys(HeapTuple pgConstraintTuple,
 										  Var *referencedDistColumn,
 										  int *referencingAttrIndex,
 										  int *referencedAttrIndex);
+static List * GetLocalTablesReferencingToLocalReferenceTablePlacement(Oid
+																	  referenceTableOid,
+																	  bool findAll);
 
 /*
  * ConstraintIsAForeignKeyToReferenceTable checks if the given constraint is a
@@ -590,6 +594,157 @@ ErrorIfUnsupportedAlterAddDropFKeyBetweenReferecenceAndLocalTable(Oid referencin
 								"Consider adding coordinator to pg_dist_node as well.")));
 		}
 	}
+}
+
+
+/*
+ * ErrorIfMissingDependentLocalTablesToReferenceTables errors out if one of the
+ * reference tables given in the referenceTableOids
+ *  - has a local reference table placement and
+ *  - is referenced by a local table other than the ones given in localTableOids
+ *    list.
+ * This function is designed to be called when dropping a reference table via
+ * a non-cascading drop command and should be called with parameters indicating
+ * the local tables and reference tables to be dropped via that drop command.
+ */
+void
+ErrorIfMissingDependentLocalTablesToReferenceTables(List *localTableOids,
+													List *referenceTableOids)
+{
+	/*
+	 * This function is only called from functions processing commands like
+	 * "DROP TABLE reference_table", hence we should be in the coordinator
+	 */
+	Assert(IsCoordinator());
+
+	if (list_length(referenceTableOids) <= 0)
+	{
+		/* no reference table exists in DROP TABLE command */
+		return;
+	}
+
+	Oid referencingLocalTableOid = InvalidOid;
+	Oid referenceTableOid = InvalidOid;
+	foreach_oid(referenceTableOid, referenceTableOids)
+	{
+		/*
+		 * Apply list difference below to find if any of the referencing local
+		 * tables are missing in DROP TABLE command
+		 */
+		const bool findAll = true;
+		List *referencingLocalTableOids =
+			GetLocalTablesReferencingToLocalReferenceTablePlacement(referenceTableOid,
+																	findAll);
+
+		List *missingLocalTables = list_difference_oid(referencingLocalTableOids,
+													   localTableOids);
+
+		/*
+		 * If there is at least one local table referencing to a local reference
+		 * table placement and it is missing in DROP TABLE command
+		 */
+		if (list_length(missingLocalTables) > 0)
+		{
+			/*
+			 * Take one of localTableOid's and store to error out below, also
+			 * use the last referenceTableOid which is set while looping
+			 */
+			referencingLocalTableOid = linitial_oid(missingLocalTables);
+			break;
+		}
+	}
+
+	if (!OidIsValid(referencingLocalTableOid))
+	{
+		/* no such missing dependent local tables to error out */
+		return;
+	}
+
+	const char *localTableName = get_rel_name(referencingLocalTableOid);
+	const char *referenceTableName = get_rel_name(referenceTableOid);
+
+	Assert(localTableName != NULL && referenceTableName != NULL);
+
+	ereport(ERROR, (errcode(ERRCODE_DEPENDENT_OBJECTS_STILL_EXIST),
+					errmsg(
+						"cannot DROP reference table placement from coordinator"),
+					errdetail(
+						"Local table \"%s\" referencing to reference table "
+						"\"%s\", which has placement(s) in coordinator",
+						localTableName, referenceTableName),
+					errhint(
+						"Drop foreign key constraint between them, or drop reference "
+						"table with DROP ... CASCADE, or drop both in the same command.")));
+}
+
+
+/*
+ * GetLocalTablesReferencingToLocalReferenceTablePlacement returns OID(s) of
+ * the local table(s) that are referencing to the local placement of the
+ * reference table with referenceTableOid. It does that by scanning pg_constraint
+ * for foreign key constraints.
+ *
+ * If there does not exist such a local table, returns an empty list.
+ * If findAll is false, even if there exists more than one such tables, it
+ * returns a single-element list including OID of the first local table encountered
+ * while scanning pg_constraint.
+ */
+static List *
+GetLocalTablesReferencingToLocalReferenceTablePlacement(Oid referenceTableOid, bool
+														findAll)
+{
+	Oid localReferenceTablePlacementOid = GetOnlyShardOidOfReferenceTable(
+		referenceTableOid);
+
+	/* early exit if we could not hit to a healthy shard placement relation */
+	if (!OidIsValid(localReferenceTablePlacementOid))
+	{
+		return NIL;
+	}
+
+	List *localTableOidList = NIL;
+
+	ScanKeyData scanKey[1];
+	int scanKeyCount = 1;
+	Oid scanIndexId = InvalidOid;
+	bool useIndex = false;
+
+	Relation pgConstraint = heap_open(ConstraintRelationId, AccessShareLock);
+
+	ScanKeyInit(&scanKey[0], Anum_pg_constraint_confrelid, BTEqualStrategyNumber, F_OIDEQ,
+				localReferenceTablePlacementOid);
+	SysScanDesc scanDescriptor = systable_beginscan(pgConstraint, scanIndexId, useIndex,
+													NULL,
+													scanKeyCount, scanKey);
+
+	HeapTuple heapTuple = systable_getnext(scanDescriptor);
+
+	while (HeapTupleIsValid(heapTuple))
+	{
+		Form_pg_constraint constraintForm = (Form_pg_constraint) GETSTRUCT(heapTuple);
+
+		Oid referencingTableOid = constraintForm->conrelid;
+		bool referencingIsLocalTable = !IsCitusTable(referencingTableOid);
+
+		if (constraintForm->contype == CONSTRAINT_FOREIGN && referencingIsLocalTable)
+		{
+			localTableOidList = list_concat(localTableOidList, list_make1_oid(
+												referencingTableOid));
+
+			if (!findAll)
+			{
+				break;
+			}
+		}
+
+		heapTuple = systable_getnext(scanDescriptor);
+	}
+
+	/* clean up scan and close system catalog */
+	systable_endscan(scanDescriptor);
+	heap_close(pgConstraint, NoLock);
+
+	return localTableOidList;
 }
 
 
