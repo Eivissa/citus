@@ -1390,6 +1390,37 @@ EnsureFunctionOwner(Oid functionId)
 
 
 /*
+ * EnsureDistributedTable error out if the given relation is not a distributed table
+ * with the given message.
+ */
+void
+EnsureDistributedTable(Oid sourceRelationId, const char *errorMessage)
+{
+	if (!IsDistributedTable(sourceRelationId))
+	{
+		ereport(ERROR, (errmsg("%s", errorMessage)));
+	}
+}
+
+
+/*
+ * IsDistributedTable returns true if the given relation is
+ * a distributed table.
+ */
+bool
+IsDistributedTable(Oid relationId)
+{
+	CitusTableCacheEntry *sourceTableEntry = GetCitusTableCacheEntry(relationId);
+	if (sourceTableEntry == NULL)
+	{
+		return false;
+	}
+	char sourceDistributionMethod = sourceTableEntry->partitionMethod;
+	return sourceDistributionMethod == DISTRIBUTE_BY_HASH;
+}
+
+
+/*
  * EnsureSuperUser check that the current user is a superuser and errors out if not.
  */
 void
