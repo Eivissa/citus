@@ -7,8 +7,17 @@ CREATE SCHEMA citus;
 
 -- Enable SSL to encrypt all trafic by default
 
--- create temporary UDF that has the power to change settings within postgres and drop it
--- after ssl has been setup.
+-- create temporary UDF that has the power to change settings within postgres
+-- and drop it after ssl has been setup.
+
+-- This was placed here in version 8.1.0. This means that this code has not
+-- been executed for clusters created before 8.1.0. This is a somewhat hacky
+-- way to detect that we can safely set sslmode=require for citus.node_conninfo
+-- in the upgrade script to 8.1.0. We will do so only if ssl is enabled before
+-- running that upgrade script. For upgrades where this is not the case this is
+-- not safe, since that probably means not all nodes have SSL setup yet we
+-- would get connection errors with "sslmode=require" during the cluster
+-- upgrade.
 CREATE FUNCTION citus_setup_ssl()
     RETURNS void
     LANGUAGE C STRICT

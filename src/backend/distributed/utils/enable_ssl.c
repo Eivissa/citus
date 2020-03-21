@@ -49,7 +49,6 @@ static void GloballyReloadConfig(void);
 #ifdef USE_SSL
 
 /* forward declaration of functions used when compiled with ssl */
-static bool ShouldUseAutoSSL(void);
 static bool CreateCertificatesWhenNeeded(void);
 static EVP_PKEY * GeneratePrivateKey(void);
 static X509 * CreateCertificate(EVP_PKEY *privateKey);
@@ -73,36 +72,39 @@ citus_setup_ssl(PG_FUNCTION_ARGS)
 	ereport(WARNING, (errmsg("can not setup ssl on postgres that is not compiled with "
 							 "ssl support")));
 #else /* USE_SSL */
-	if (!EnableSSL && ShouldUseAutoSSL())
+	if (EnableSSL)
 	{
-		ereport(LOG, (errmsg("citus extension created on postgres without ssl enabled, "
-							 "turning it on during creation of the extension")));
-
-		/* execute the alter system statement to enable ssl on within postgres */
-		Node *enableSSLParseTree = ParseTreeNode(ENABLE_SSL_QUERY);
-		AlterSystemSetConfigFile((AlterSystemStmt *) enableSSLParseTree);
-
-		if (strcmp(SSLCipherSuites, POSTGRES_DEFAULT_SSL_CIPHERS) == 0)
-		{
-			/*
-			 * postgres default cipher suite is configured, these allow TSL 1 and TLS 1.1,
-			 * citus will upgrade to TLS1.2+HIGH and above.
-			 */
-			Node *citusSSLCiphersParseTree = ParseTreeNode(SET_CITUS_SSL_CIPHERS_QUERY);
-			AlterSystemSetConfigFile((AlterSystemStmt *) citusSSLCiphersParseTree);
-		}
-
-		/*
-		 * ssl=on requires that a key and certificate are present, since we have
-		 * enabled ssl mode here chances are the user didn't install credentials already.
-		 *
-		 * This function will check if they are available and if not it will generate a
-		 * self singed certificate.
-		 */
-		CreateCertificatesWhenNeeded();
-
-		GloballyReloadConfig();
+		/* It's already on */
+		PG_RETURN_NULL();
 	}
+
+	ereport(LOG, (errmsg("citus extension created on postgres without ssl enabled, "
+						 "turning it on during creation of the extension")));
+
+	/* execute the alter system statement to enable ssl on within postgres */
+	Node *enableSSLParseTree = ParseTreeNode(ENABLE_SSL_QUERY);
+	AlterSystemSetConfigFile((AlterSystemStmt *) enableSSLParseTree);
+
+	if (strcmp(SSLCipherSuites, POSTGRES_DEFAULT_SSL_CIPHERS) == 0)
+	{
+		/*
+		 * postgres default cipher suite is configured, these allow TSL 1 and TLS 1.1,
+		 * citus will upgrade to TLS1.2+HIGH and above.
+		 */
+		Node *citusSSLCiphersParseTree = ParseTreeNode(SET_CITUS_SSL_CIPHERS_QUERY);
+		AlterSystemSetConfigFile((AlterSystemStmt *) citusSSLCiphersParseTree);
+	}
+
+	/*
+	 * ssl=on requires that a key and certificate are present, since we have
+	 * enabled ssl mode here chances are the user didn't install credentials already.
+	 *
+	 * This function will check if they are available and if not it will generate a
+	 * self singed certificate.
+	 */
+	CreateCertificatesWhenNeeded();
+
+	GloballyReloadConfig();
 #endif /* USE_SSL */
 
 	PG_RETURN_NULL();
@@ -177,27 +179,6 @@ GloballyReloadConfig()
 
 
 #ifdef USE_SSL
-
-
-/*
- * ShouldUseAutoSSL checks if citus should enable ssl based on the connection settings it
- * uses for outward connections. When the outward connection is configured to require ssl
- * it assumes the other nodes in the network have the same setting and therefor it will
- * automatically enable ssl during installation.
- */
-static bool
-ShouldUseAutoSSL(void)
-{
-	const char *sslmode = NULL;
-	sslmode = GetConnParam("sslmode");
-
-	if (sslmode != NULL && strcmp(sslmode, "require") == 0)
-	{
-		return true;
-	}
-
-	return false;
-}
 
 
 /*
